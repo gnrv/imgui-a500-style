@@ -41,9 +41,9 @@ LIBS =
 
 ifeq ($(UNAME_S), Linux) #LINUX
 	ECHO_MESSAGE = "Linux"
-	LIBS += $(LINUX_GL_LIBS) `pkg-config --static --libs glfw3`
+	LIBS += $(LINUX_GL_LIBS) `pkg-config --static --libs glfw3` `pkg-config --static --libs glew`
 
-	CXXFLAGS += `pkg-config --cflags glfw3`
+	CXXFLAGS += `pkg-config --cflags glfw3` `pkg-config --cflags glew`
 	CFLAGS = $(CXXFLAGS)
 endif
 

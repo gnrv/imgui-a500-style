@@ -14,6 +14,8 @@
 #define GL_SILENCE_DEPRECATION
 #if defined(IMGUI_IMPL_OPENGL_ES2)
 #include <GLES2/gl2.h>
+#else
+#include <GL/glew.h>
 #endif
 #include <GLFW/glfw3.h> // Will drag system OpenGL headers
 
@@ -64,12 +66,23 @@ int main(int, char**)
     //glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);            // 3.0+ only
 #endif
 
+    // We want to render ImGUI content to an offscreen FBO of size 320x240.
+    // Then we draw the contents of the FBO to screen using a CRT shader. We need at least 4x upscale here
+    //int fbo_size[2] = { 320, 240 };
+    //int upscale = 4;
+    int fbo_size[2] = { 320, 240 };
+    int upscale = 4;
+    int window_size[2] = { fbo_size[0] * upscale, fbo_size[1] * upscale };
+    bool use_crt_shader = true;
+
     // Create window with graphics context
-    GLFWwindow* window = glfwCreateWindow(1280, 720, "Dear ImGui GLFW+OpenGL3 example", nullptr, nullptr);
+    GLFWwindow* window = glfwCreateWindow(window_size[0], window_size[1], "Dear ImGui GLFW+OpenGL3 example", nullptr, nullptr);
     if (window == nullptr)
         return 1;
     glfwMakeContextCurrent(window);
     glfwSwapInterval(1); // Enable vsync
+
+    glewInit();
 
     // Setup Dear ImGui context
     IMGUI_CHECKVERSION();
@@ -81,6 +94,8 @@ int main(int, char**)
     // Setup Dear ImGui style
     ImGui::StyleColorsDark();
     //ImGui::StyleColorsLight();
+    float scale = use_crt_shader ? 1.0f : upscale;
+    ImGui::GetStyle().ScaleAllSizes(scale); // Scale UI
 
     // Setup Platform/Renderer backends
     ImGui_ImplGlfw_InitForOpenGL(window, true);
@@ -99,7 +114,7 @@ int main(int, char**)
     // - Remember that in C/C++ if you want to include a backslash \ in a string literal you need to write a double backslash \\ !
     // - Our Emscripten build process allows embedding fonts to be accessible at runtime from the "fonts/" folder. See Makefile.emscripten for details.
     //io.Fonts->AddFontDefault();
-    //io.Fonts->AddFontFromFileTTF("c:\\Windows\\Fonts\\segoeui.ttf", 18.0f);
+    io.Fonts->AddFontFromFileTTF("Topaz_a1200_v1.0.ttf", 16.0f * scale);
     //io.Fonts->AddFontFromFileTTF("../../misc/fonts/DroidSans.ttf", 16.0f);
     //io.Fonts->AddFontFromFileTTF("../../misc/fonts/Roboto-Medium.ttf", 16.0f);
     //io.Fonts->AddFontFromFileTTF("../../misc/fonts/Cousine-Regular.ttf", 15.0f);
@@ -171,13 +186,133 @@ int main(int, char**)
         }
 
         // Rendering
-        ImGui::Render();
-        int display_w, display_h;
-        glfwGetFramebufferSize(window, &display_w, &display_h);
-        glViewport(0, 0, display_w, display_h);
-        glClearColor(clear_color.x * clear_color.w, clear_color.y * clear_color.w, clear_color.z * clear_color.w, clear_color.w);
-        glClear(GL_COLOR_BUFFER_BIT);
-        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+        if (use_crt_shader) {
+            static GLuint fbo = 0;
+            static GLuint fbo_texture = 0;
+            static GLuint crt_shader = 0;
+            static GLuint crt_texture = 0;
+            static GLuint crt_vao = 0;
+            static GLuint crt_vbo = 0;
+            if (!fbo) {
+                glGenFramebuffers(1, &fbo);
+                glGenTextures(1, &fbo_texture);
+                glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+                glBindTexture(GL_TEXTURE_2D, fbo_texture);
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, fbo_size[0], fbo_size[1], 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+                glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, fbo_texture, 0);
+                if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+                    fprintf(stderr, "Framebuffer not complete\n");
+                glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+                // To get us started, use a simple blit shader to copy the contents of the FBO to the window
+                crt_shader = glCreateProgram();
+                GLuint vs = glCreateShader(GL_VERTEX_SHADER);
+                const char* vs_src = R"(
+                    #version 130
+                    uniform float width;
+                    uniform float height;
+                    in vec2 position;
+                    out vec2 uv;
+                    void main() {
+                        uv = position * 0.5 + 0.5; // + vec2(0.5/width, 0.5/height);
+                        gl_Position = vec4(position, 0.0, 1.0);
+                    }
+                )";
+                glShaderSource(vs, 1, &vs_src, NULL);
+                glCompileShader(vs);
+                glAttachShader(crt_shader, vs);
+                GLuint fs = glCreateShader(GL_FRAGMENT_SHADER);
+                const char* fs_src = R"(
+                    #version 130
+                    uniform sampler2D tex;
+                    in vec2 uv;
+                    out vec4 frag_color;
+                    void main() {
+                        frag_color = texture(tex, uv);
+                    }
+                )";
+                glShaderSource(fs, 1, &fs_src, NULL);
+                glCompileShader(fs);
+                glAttachShader(crt_shader, fs);
+                glLinkProgram(crt_shader);
+
+                // Check that all went well
+                GLint status;
+                glGetProgramiv(crt_shader, GL_LINK_STATUS, &status);
+                if (status == GL_FALSE) {
+                    GLint log_length;
+                    glGetProgramiv(crt_shader, GL_INFO_LOG_LENGTH, &log_length);
+                    char* log = new char[log_length];
+                    glGetProgramInfoLog(crt_shader, log_length, NULL, log);
+                    fprintf(stderr, "Link error: %s\n", log);
+                    delete[] log;
+                }
+            }
+
+            ImGui::Render();
+
+            // Make the FBO current and draw all the IMGUI stuff to it
+            glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+            glViewport(0, 0, fbo_size[0], fbo_size[1]);
+            glClearColor(clear_color.x * clear_color.w, clear_color.y * clear_color.w, clear_color.z * clear_color.w, clear_color.w);
+            glClear(GL_COLOR_BUFFER_BIT);
+            // The viewport used for glClear will not be used by ImGUI, it will apply its own state to GL and restore our state before returning
+            ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+            glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+            int display_w, display_h;
+            glfwGetFramebufferSize(window, &display_w, &display_h);
+            glViewport(0, 0, display_w, display_h);
+
+            // Render the FBO to the window using the CRT shader
+            if (!crt_texture) {
+                glGenTextures(1, &crt_texture);
+                glBindTexture(GL_TEXTURE_2D, crt_texture);
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, fbo_size[0], fbo_size[1], 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+            }
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D, fbo_texture);
+            glUseProgram(crt_shader);
+            glUniform1i(glGetUniformLocation(crt_shader, "tex"), 0);
+            glUniform1f(glGetUniformLocation(crt_shader, "width"), fbo_size[0]);
+            glUniform1f(glGetUniformLocation(crt_shader, "height"), fbo_size[1]);
+            if (!crt_vao) {
+                glGenVertexArrays(1, &crt_vao);
+                glBindVertexArray(crt_vao);
+                glGenBuffers(1, &crt_vbo);
+                glBindBuffer(GL_ARRAY_BUFFER, crt_vbo);
+                float vertices[] = {
+                    -1.0f, -1.0f,
+                     1.0f, -1.0f,
+                     1.0f,  1.0f,
+                    -1.0f,  1.0f,
+                };
+                glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
+                glEnableVertexAttribArray(0);
+                glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, (void*)0);
+            }
+            glBindVertexArray(crt_vao);
+
+            // In order to get crisp upscaled pixels, we need to turn off all filtering
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+
+
+            glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
+
+        } else {
+            ImGui::Render();
+            int display_w, display_h;
+            glfwGetFramebufferSize(window, &display_w, &display_h);
+            glViewport(0, 0, display_w, display_h);
+            glClearColor(clear_color.x * clear_color.w, clear_color.y * clear_color.w, clear_color.z * clear_color.w, clear_color.w);
+            glClear(GL_COLOR_BUFFER_BIT);
+            ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+        }
 
         glfwSwapBuffers(window);
     }
