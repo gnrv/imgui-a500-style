@@ -7,7 +7,7 @@
         "program": "${workspaceFolder}/example_glfw_opengl3",
         "args": [],
         "stopAtEntry": false,
-        "cwd": "${fileDirname}",
+        "cwd": "${workspaceFolder}", // "${fileDirname}",
         "environment": [],
         "externalConsole": false,
         "MIMode": "gdb",
