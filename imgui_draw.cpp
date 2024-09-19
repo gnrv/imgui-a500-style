@@ -4120,6 +4120,9 @@ void ImFont::RenderText(ImDrawList* draw_list, float size, const ImVec2& pos, Im
         if (glyph == NULL)
             continue;
 
+        // Make sure y is a multiple of 2
+        y = static_cast<int>(y / 2) * 2;
+
         float char_width = glyph->AdvanceX * scale;
         if (glyph->Visible)
         {

@@ -8,6 +8,7 @@
 // - Introduction, links and more at the top of imgui.cpp
 
 #include "imgui.h"
+#include "implot.h"
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_opengl3.h"
 #include <stdio.h>
@@ -70,9 +71,10 @@ int main(int, char**)
     // Then we draw the contents of the FBO to screen using a CRT shader. We need at least 4x upscale here
     //int fbo_size[2] = { 320, 240 };
     //int upscale = 4;
-    int fbo_size[2] = { 320, 240 };
-    int upscale = 4;
-    int window_size[2] = { fbo_size[0] * upscale, fbo_size[1] * upscale };
+    int fbo_size[2] = { 640, 240 };
+    int upscale_x = 2;
+    int upscale_y = 4;
+    int window_size[2] = { fbo_size[0] * upscale_x, fbo_size[1] * upscale_y };
     bool use_crt_shader = true;
 
     // Create window with graphics context
@@ -87,6 +89,7 @@ int main(int, char**)
     // Setup Dear ImGui context
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
+    ImPlot::CreateContext();
     ImGuiIO& io = ImGui::GetIO(); (void)io;
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;     // Enable Keyboard Controls
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;      // Enable Gamepad Controls
@@ -94,7 +97,7 @@ int main(int, char**)
     // Setup Dear ImGui style
     ImGui::StyleColorsDark();
     //ImGui::StyleColorsLight();
-    float scale = use_crt_shader ? 1.0f : upscale;
+    float scale = use_crt_shader ? 1.0f : upscale_x;
     ImGui::GetStyle().ScaleAllSizes(scale); // Scale UI
 
     // Setup Platform/Renderer backends
@@ -114,7 +117,8 @@ int main(int, char**)
     // - Remember that in C/C++ if you want to include a backslash \ in a string literal you need to write a double backslash \\ !
     // - Our Emscripten build process allows embedding fonts to be accessible at runtime from the "fonts/" folder. See Makefile.emscripten for details.
     //io.Fonts->AddFontDefault();
-    io.Fonts->AddFontFromFileTTF("Topaz_a1200_v1.0.ttf", 16.0f * scale);
+    //io.Fonts->AddFontFromFileTTF("Topaz_a1200_v1.0.ttf", 16.0f * scale);
+    io.Fonts->AddFontFromFileTTF("Topaz_a500_v1.0.ttf", 16.0f * scale);
     //io.Fonts->AddFontFromFileTTF("../../misc/fonts/DroidSans.ttf", 16.0f);
     //io.Fonts->AddFontFromFileTTF("../../misc/fonts/Roboto-Medium.ttf", 16.0f);
     //io.Fonts->AddFontFromFileTTF("../../misc/fonts/Cousine-Regular.ttf", 15.0f);
@@ -151,6 +155,8 @@ int main(int, char**)
         // 1. Show the big demo window (Most of the sample code is in ImGui::ShowDemoWindow()! You can browse its code to learn more about Dear ImGui!).
         if (show_demo_window)
             ImGui::ShowDemoWindow(&show_demo_window);
+
+        ImPlot::ShowDemoWindow(nullptr);
 
         // 2. Show a simple window that we create ourselves. We use a Begin/End pair to create a named window.
         {
@@ -323,6 +329,7 @@ int main(int, char**)
     // Cleanup
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplGlfw_Shutdown();
+    ImPlot::DestroyContext();
     ImGui::DestroyContext();
 
     glfwDestroyWindow(window);
