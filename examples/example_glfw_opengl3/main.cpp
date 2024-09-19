@@ -32,6 +32,9 @@
 #include "../libs/emscripten/emscripten_mainloop_stub.h"
 #endif
 
+int upscale_x = 3;
+int upscale_y = 6;
+
 static void glfw_error_callback(int error, const char* description)
 {
     fprintf(stderr, "GLFW Error %d: %s\n", error, description);
@@ -71,9 +74,8 @@ int main(int, char**)
     // Then we draw the contents of the FBO to screen using a CRT shader. We need at least 4x upscale here
     //int fbo_size[2] = { 320, 240 };
     //int upscale = 4;
+    // We need an upscale of a multiple of 3 to get the correct CRT shader effect
     int fbo_size[2] = { 640, 240 };
-    int upscale_x = 2;
-    int upscale_y = 4;
     int window_size[2] = { fbo_size[0] * upscale_x, fbo_size[1] * upscale_y };
     bool use_crt_shader = true;
 
@@ -230,13 +232,46 @@ int main(int, char**)
                 glCompileShader(vs);
                 glAttachShader(crt_shader, vs);
                 GLuint fs = glCreateShader(GL_FRAGMENT_SHADER);
+                // Inspired by https://www.gamedeveloper.com/programming/shader-tutorial-crt-emulation
                 const char* fs_src = R"(
                     #version 130
                     uniform sampler2D tex;
                     in vec2 uv;
                     out vec4 frag_color;
+                    uniform float width;
+                    uniform float height;
                     void main() {
+                        // Fractional pixel value
+                        //vec2 fpx = gl_FragCoord.xy;
+                        // The problem with gl_FragCoord is it's not interpolated.
+                        // We need fractional pixel values.
+                        // We can get that by passing the position from the vertex shader
+                        // and interpolating it here.
+                        vec2 fpx = uv * vec2(width, height);
+                        // Compute the fragment color
                         frag_color = texture(tex, uv);
+                        // CRT Effect
+                        // If the x coordinate is in the first 1/3rd of a pixel,
+                        // keep the red component only. In the middle 1/3rd, keep
+                        // the green component only. In the last 1/3rd, keep the
+                        // blue component only.
+                        // First, compute the fractional pixel value in the range [0, 1)
+                        // Using fmod
+                        fpx = 1.0*(fpx - floor(fpx));
+                        vec4 bal = vec4(1, 0.9, 1, 1.0);
+                        vec4 f = 0.3 * bal;
+                        if (fpx.x < 0.33) {
+                            f.r = bal.r;
+                        } else if (fpx.x < 0.66) {
+                            f.g = bal.g;
+                        } else {
+                            f.b = bal.b;
+                        }
+                        frag_color = frag_color * f;
+                        // Add scanlines, remember y is flipped
+                        if (fpx.y < 0.33) {
+                            frag_color = frag_color * 0.75;
+                        }
                     }
                 )";
                 glShaderSource(fs, 1, &fs_src, NULL);
