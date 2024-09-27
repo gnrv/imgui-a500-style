@@ -21,6 +21,10 @@
                 "description": "Set Disassembly Flavor to Intel",
                 "text": "-gdb-set disassembly-flavor intel",
                 "ignoreFailures": true
+            },
+            {
+                "description": "Add substitute-path for glfw",
+                "text": "set substitute-path . glfw3-3.3.6"
             }
         ]
     }

@@ -84,7 +84,7 @@ int main(int, char**)
     if (window == nullptr)
         return 1;
     glfwMakeContextCurrent(window);
-    glfwSwapInterval(1); // Enable vsync
+    glfwSwapInterval(2); // Enable vsync. Setting interval to 1 fails to give 60 Hz on my machine, use 30 Hz instead.
 
     glewInit();
 
@@ -129,6 +129,7 @@ int main(int, char**)
 
     // Our state
     bool show_demo_window = true;
+    bool show_implot_demo = true;
     bool show_another_window = false;
     ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
 
@@ -158,7 +159,8 @@ int main(int, char**)
         if (show_demo_window)
             ImGui::ShowDemoWindow(&show_demo_window);
 
-        ImPlot::ShowDemoWindow(nullptr);
+        if (show_implot_demo)
+            ImPlot::ShowDemoWindow(&show_implot_demo);
 
         // 2. Show a simple window that we create ourselves. We use a Begin/End pair to create a named window.
         {
@@ -201,6 +203,7 @@ int main(int, char**)
             static GLuint crt_texture = 0;
             static GLuint crt_vao = 0;
             static GLuint crt_vbo = 0;
+            static GLuint locations[4] = { 0, 0, 0, 0 };
             if (!fbo) {
                 glGenFramebuffers(1, &fbo);
                 glGenTextures(1, &fbo_texture);
@@ -240,16 +243,25 @@ int main(int, char**)
                     out vec4 frag_color;
                     uniform float width;
                     uniform float height;
-                    void main() {
-                        // Fractional pixel value
-                        //vec2 fpx = gl_FragCoord.xy;
-                        // The problem with gl_FragCoord is it's not interpolated.
-                        // We need fractional pixel values.
-                        // We can get that by passing the position from the vertex shader
-                        // and interpolating it here.
-                        vec2 fpx = uv * vec2(width, height);
+                    uniform float scanline;
+
+                    //uniform float offset[5] = float[](0.0, 1.0, 2.0, 3.0, 4.0);
+                    //uniform float weight[5] = float[](0.2270270270, 0.1945945946, 0.1216216216,
+                    //                                   0.0540540541, 0.0162162162);
+                    uniform float offset[4] = float[](0.0, 1.0, 2.0, 3.0);
+                    uniform float weight[4] =    float[](0.2514970059, 0.2095808383, 0.1197604790,
+                                                         0.0449101796);
+                    uniform int num_weights = 4;
+
+
+                    vec4 phosphor(sampler2D tex, vec2 uv, vec2 resolution) {
+                        vec2 fpx = uv * resolution;
                         // Compute the fragment color
-                        frag_color = texture(tex, uv);
+                        vec4 color = 1.25*texture(tex, uv);
+                        // scanline
+                        if (floor(fpx.y) == scanline) {
+                            color = color * 1.5 / 1.25;
+                        }
                         // CRT Effect
                         // If the x coordinate is in the first 1/3rd of a pixel,
                         // keep the red component only. In the middle 1/3rd, keep
@@ -267,11 +279,33 @@ int main(int, char**)
                         } else {
                             f.b = bal.b;
                         }
-                        frag_color = frag_color * f;
+                        color = color * f;
                         // Add scanlines, remember y is flipped
                         if (fpx.y < 0.33) {
-                            frag_color = frag_color * 0.75;
+                            color = color * 0.75;
                         }
+                        return color;
+                    }
+
+                    vec4 blur(sampler2D image, vec2 uv, vec2 resolution, float radius) {
+                        vec4 color = 2*phosphor(image, uv, resolution) * weight[0];
+                        for (int i = 1; i < num_weights; i++) {
+                            color += phosphor(image, uv + vec2(offset[i] * radius / resolution.x, 0.0), resolution) * weight[i];
+                            color += phosphor(image, uv - vec2(offset[i] * radius / resolution.x, 0.0), resolution) * weight[i];
+                        }
+                        return color;
+                    }
+
+                    void main() {
+                        // Fractional pixel value
+                        //vec2 fpx = gl_FragCoord.xy;
+                        // The problem with gl_FragCoord is it's not interpolated.
+                        // We need fractional pixel values.
+                        // We can get that by passing the position from the vertex shader
+                        // and interpolating it here.
+                        //frag_color = texture(tex, uv);
+                        //frag_color = phosphor(tex, uv, vec2(width, height));
+                        frag_color = blur(tex, uv, vec2(width, height), 1.0);
                     }
                 )";
                 glShaderSource(fs, 1, &fs_src, NULL);
@@ -290,6 +324,12 @@ int main(int, char**)
                     fprintf(stderr, "Link error: %s\n", log);
                     delete[] log;
                 }
+
+                int i = 0;
+                locations[i++] = glGetUniformLocation(crt_shader, "tex");
+                locations[i++] = glGetUniformLocation(crt_shader, "width");
+                locations[i++] = glGetUniformLocation(crt_shader, "height");
+                locations[i++] = glGetUniformLocation(crt_shader, "scanline");
             }
 
             ImGui::Render();
@@ -318,9 +358,13 @@ int main(int, char**)
             glActiveTexture(GL_TEXTURE0);
             glBindTexture(GL_TEXTURE_2D, fbo_texture);
             glUseProgram(crt_shader);
-            glUniform1i(glGetUniformLocation(crt_shader, "tex"), 0);
-            glUniform1f(glGetUniformLocation(crt_shader, "width"), fbo_size[0]);
-            glUniform1f(glGetUniformLocation(crt_shader, "height"), fbo_size[1]);
+            glUniform1i(locations[0], 0);
+            glUniform1f(locations[1], fbo_size[0]);
+            glUniform1f(locations[2], fbo_size[1]);
+            static float scanline = 0;
+            ++scanline;
+            if (scanline == fbo_size[1]) scanline = 0;
+            glUniform1f(locations[3], scanline);
             if (!crt_vao) {
                 glGenVertexArrays(1, &crt_vao);
                 glBindVertexArray(crt_vao);
@@ -337,11 +381,6 @@ int main(int, char**)
                 glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, (void*)0);
             }
             glBindVertexArray(crt_vao);
-
-            // In order to get crisp upscaled pixels, we need to turn off all filtering
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-
 
             glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
 
