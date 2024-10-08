@@ -84,6 +84,7 @@ int main(int, char**)
     bool use_crt_shader = true;
 
     // Create window with graphics context
+    glfwWindowHint(GLFW_SAMPLES, 4);
     GLFWwindow* window = glfwCreateWindow(window_size[0], window_size[1], "Dear ImGui GLFW+OpenGL3 example", nullptr, nullptr);
     if (window == nullptr)
         return 1;
@@ -91,6 +92,9 @@ int main(int, char**)
     glfwSwapInterval(2); // Enable vsync. Setting interval to 1 fails to give 60 Hz on my machine, use 30 Hz instead.
 
     glewInit();
+
+    // Turn on 4x MSAA
+    glEnable(GL_MULTISAMPLE);
 
     // Setup Dear ImGui context
     IMGUI_CHECKVERSION();
