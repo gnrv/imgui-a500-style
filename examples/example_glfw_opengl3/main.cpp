@@ -11,6 +11,7 @@
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_opengl3.h"
 #include "implot.h"
+#include "filter.h"
 #include <stdio.h>
 #define GL_SILENCE_DEPRECATION
 #if defined(IMGUI_IMPL_OPENGL_ES2)
@@ -33,8 +34,6 @@
 #ifdef __EMSCRIPTEN__
 #include "../libs/emscripten/emscripten_mainloop_stub.h"
 #endif
-
-//#define DISABLE_CRT_CURVATURE
 
 int upscale_x = 3;
 int upscale_y = 6;
@@ -95,6 +94,28 @@ int main(int, char**)
 
     // Turn on 4x MSAA
     glEnable(GL_MULTISAMPLE);
+
+    GLuint fbo{ 0 };
+    GLuint fbo_texture{ 0 };
+
+    if (use_crt_shader) {
+        glGenFramebuffers(1, &fbo);
+        glGenTextures(1, &fbo_texture);
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+        glBindTexture(GL_TEXTURE_2D, fbo_texture);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, fbo_size[0], fbo_size[1], 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        // Make sure we get black color when uv coordinate is out of bounds
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, fbo_texture, 0);
+        if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+            fprintf(stderr, "Framebuffer not complete\n");
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+        filter_init(window_size[0], window_size[1]);
+    }
 
     // Setup Dear ImGui context
     IMGUI_CHECKVERSION();
@@ -227,172 +248,6 @@ int main(int, char**)
 
         // Rendering
         if (use_crt_shader) {
-            static GLuint fbo = 0;
-            static GLuint fbo_texture = 0;
-            static GLuint crt_shader = 0;
-            static GLuint crt_texture = 0;
-            static GLuint crt_vao = 0;
-            static GLuint crt_vbo = 0;
-            static GLuint locations[4] = {0, 0, 0, 0};
-            if (!fbo) {
-                glGenFramebuffers(1, &fbo);
-                glGenTextures(1, &fbo_texture);
-                glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-                glBindTexture(GL_TEXTURE_2D, fbo_texture);
-                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, fbo_size[0], fbo_size[1], 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
-                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-                // Make sure we get black color when uv coordinate is out of bounds
-                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER);
-                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER);
-                glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, fbo_texture, 0);
-                if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
-                    fprintf(stderr, "Framebuffer not complete\n");
-                glBindFramebuffer(GL_FRAMEBUFFER, 0);
-
-                // To get us started, use a simple blit shader to copy the contents of the FBO to the window
-                crt_shader = glCreateProgram();
-                GLuint vs = glCreateShader(GL_VERTEX_SHADER);
-                const char* vs_src = R"(
-                    #version 130
-                    uniform float width;
-                    uniform float height;
-                    in vec2 position;
-                    out vec2 uv;
-
-                    vec2 warp(vec2 position) {
-                        vec2 delta = position*0.5;
-                        // Warp the gl_Position to get the CRT curvature effect
-                        float delta2 = dot(delta.xy, delta.xy);
-                        float delta4 = delta2 * delta2;
-                        float warp_factor = 0.25;
-                        float delta_offset = delta4 * warp_factor;
-
-                        return (uv - delta * delta_offset)*2.0 - 1.0;
-                    }
-
-                    void main() {
-                        uv = position * 0.5 + 0.5; // + vec2(0.5/width, 0.5/height);
-                        //gl_Position = vec4(position, 0.0, 1.0);
-                        gl_Position = vec4(warp(position), 0.0, 1.0);
-                        //uv = vec2(0.999, 0.999);
-                    }
-                )";
-                glShaderSource(vs, 1, &vs_src, NULL);
-                glCompileShader(vs);
-                glAttachShader(crt_shader, vs);
-                GLuint fs = glCreateShader(GL_FRAGMENT_SHADER);
-                // Inspired by https://www.gamedeveloper.com/programming/shader-tutorial-crt-emulation
-                const char* fs_src = R"(
-                    #version 130
-                    uniform sampler2D tex;
-                    in vec2 uv;
-                    out vec4 frag_color;
-                    uniform float width;
-                    uniform float height;
-                    uniform float scanline;
-
-                    //uniform float offset[5] = float[](0.0, 1.0, 2.0, 3.0, 4.0);
-                    //uniform float weight[5] = float[](0.2270270270, 0.1945945946, 0.1216216216,
-                    //                                   0.0540540541, 0.0162162162);
-                    uniform float offset[4] = float[](0.0, 1.0, 2.0, 3.0);
-                    uniform float weight[4] =    float[](0.2514970059, 0.2095808383, 0.1197604790,
-                                                         0.0449101796);
-                    uniform int num_weights = 4;
-
-                    vec2 warp(vec2 uv) {
-                        // Warp the gl_Position to get the CRT curvature effect
-                        vec2 delta = uv - 0.5;
-                        float delta2 = dot(delta.xy, delta.xy);
-                        float delta4 = delta2 * delta2;
-                        float warp_factor = 0.25;
-                        float delta_offset = delta4 * warp_factor;
-
-                        return uv + delta * delta_offset;
-                    }
-
-                    vec4 phosphor(sampler2D tex, vec2 uv, vec2 resolution) {
-                        //uv = warp(uv);
-                        vec2 fpx = uv * resolution;
-                        // Compute the fragment color
-                        vec4 color = 1.25*texture(tex, uv);
-                        // scanline
-                        if (floor(fpx.y) == scanline) {
-                            color = color * 1.5 / 1.25;
-                        }
-                        // CRT Effect
-                        // If the x coordinate is in the first 1/3rd of a pixel,
-                        // keep the red component only. In the middle 1/3rd, keep
-                        // the green component only. In the last 1/3rd, keep the
-                        // blue component only.
-                        // First, compute the fractional pixel value in the range [0, 1)
-                        // Using fmod
-                        fpx = 1.0*(fpx - floor(fpx));
-                        vec4 bal = vec4(1, 0.9, 1, 1.0);
-                        vec4 f = 0.3 * bal;
-                        if (fpx.x < 0.33) {
-                            f.r = bal.r;
-                        } else if (fpx.x < 0.66) {
-                            f.g = bal.g;
-                        } else {
-                            f.b = bal.b;
-                        }
-                        color = color * f;
-                        // Add scanlines, remember y is flipped
-                        if (fpx.y < 0.33) {
-                            color = color * 0.75;
-                        }
-                        return color;
-                    }
-
-                    vec4 blur(sampler2D image, vec2 uv, vec2 resolution, float radius) {
-                        vec4 color = 2*phosphor(image, uv, resolution) * weight[0];
-                        for (int i = 1; i < num_weights; i++) {
-                            color += phosphor(image, uv + vec2(offset[i] * radius / resolution.x, 0.0), resolution) * weight[i];
-                            color += phosphor(image, uv - vec2(offset[i] * radius / resolution.x, 0.0), resolution) * weight[i];
-                        }
-                        return color;
-                    }
-
-                    void main() {
-                        // Debug uv coords
-                        //frag_color = vec4(uv, 0.0, 1.0);
-                        // Fractional pixel value
-                        //vec2 px = gl_FragCoord.xy;
-                        //frag_color = texture(tex, px / vec2(width, height));
-                        // The problem with gl_FragCoord is it's not interpolated.
-                        // We need fractional pixel values.
-                        // We can get that by passing the position from the vertex shader
-                        // and interpolating it here.
-                        //frag_color = texture(tex, uv);
-                        //frag_color = phosphor(tex, uv, vec2(width, height));
-                        frag_color = blur(tex, uv, vec2(width, height), 1.0);
-                    }
-                )";
-                glShaderSource(fs, 1, &fs_src, NULL);
-                glCompileShader(fs);
-                glAttachShader(crt_shader, fs);
-                glLinkProgram(crt_shader);
-
-                // Check that all went well
-                GLint status;
-                glGetProgramiv(crt_shader, GL_LINK_STATUS, &status);
-                if (status == GL_FALSE) {
-                    GLint log_length;
-                    glGetProgramiv(crt_shader, GL_INFO_LOG_LENGTH, &log_length);
-                    char* log = new char[log_length];
-                    glGetProgramInfoLog(crt_shader, log_length, NULL, log);
-                    fprintf(stderr, "Link error: %s\n", log);
-                    delete[] log;
-                }
-
-                int i = 0;
-                locations[i++] = glGetUniformLocation(crt_shader, "tex");
-                locations[i++] = glGetUniformLocation(crt_shader, "width");
-                locations[i++] = glGetUniformLocation(crt_shader, "height");
-                locations[i++] = glGetUniformLocation(crt_shader, "scanline");
-            }
-
             ImGui::Render();
 
             // Make the FBO current and draw all the IMGUI stuff to it
@@ -415,106 +270,7 @@ int main(int, char**)
             glClearColor(0, 0, 0, 1);
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
 
-            // Render the FBO to the window using the CRT shader
-            if (!crt_texture) {
-                glGenTextures(1, &crt_texture);
-                glBindTexture(GL_TEXTURE_2D, crt_texture);
-                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, fbo_size[0], fbo_size[1], 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
-                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-            }
-            glActiveTexture(GL_TEXTURE0);
-            glBindTexture(GL_TEXTURE_2D, fbo_texture);
-            glUseProgram(crt_shader);
-            glUniform1i(locations[0], 0);
-            glUniform1f(locations[1], fbo_size[0]);
-            glUniform1f(locations[2], fbo_size[1]);
-            static float scanline = 0;
-            ++scanline;
-            if (scanline == fbo_size[1])
-                scanline = 0;
-            glUniform1f(locations[3], scanline);
-#ifndef DISABLE_CRT_CURVATURE
-            static int num_triangles = 0;
-#endif
-            if (!crt_vao) {
-#ifdef DISABLE_CRT_CURVATURE
-                glGenVertexArrays(1, &crt_vao);
-                glBindVertexArray(crt_vao);
-                glGenBuffers(1, &crt_vbo);
-                glBindBuffer(GL_ARRAY_BUFFER, crt_vbo);
-                float vertices[] = {
-                    -1.0f,
-                    -1.0f,
-                    1.0f,
-                    -1.0f,
-                    1.0f,
-                    1.0f,
-                    -1.0f,
-                    1.0f,
-                };
-                glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
-                glEnableVertexAttribArray(0);
-                glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, (void*)0);
-#else
-                // Generate a mesh of 20x20 pixel big tiles that will be used to apply the CRT shader
-                // the mesh will be deformed to emulate CRT curvature
-                glGenVertexArrays(1, &crt_vao);
-                glBindVertexArray(crt_vao);
-                glGenBuffers(1, &crt_vbo);
-                glBindBuffer(GL_ARRAY_BUFFER, crt_vbo);
-
-                int numTilesX = window_size[0] / 20; // 20x20 pixel tiles
-                int numTilesY = window_size[1] / 20;
-                float tileWidth = 2.0f / numTilesX;
-                float tileHeight = 2.0f / numTilesY;
-
-                std::vector<float> vertices;
-                for (int y = 0; y < numTilesY; y++) {
-                    for (int x = 0; x < numTilesX; x++) {
-                        float startX = -1.0f + x * tileWidth;
-                        float startY = -1.0f + y * tileHeight;
-                        float endX = startX + tileWidth;
-                        float endY = startY + tileHeight;
-
-                        // Triangle 1
-                        vertices.push_back(startX);
-                        vertices.push_back(startY);
-                        vertices.push_back(endX);
-                        vertices.push_back(startY);
-                        vertices.push_back(endX);
-                        vertices.push_back(endY);
-
-                        // Triangle 2
-                        vertices.push_back(startX);
-                        vertices.push_back(startY);
-                        vertices.push_back(endX);
-                        vertices.push_back(endY);
-                        vertices.push_back(startX);
-                        vertices.push_back(endY);
-                    }
-                }
-                assert(vertices.size() == numTilesX * numTilesY * 6 * 2);
-                num_triangles = vertices.size() / 6;
-                glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(float), vertices.data(), GL_STATIC_DRAW);
-                glEnableVertexAttribArray(0);
-                glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, (void*)0);
-#endif
-                // See if we got any GL errors in the queue
-                GLenum err;
-                while ((err = glGetError()) != GL_NO_ERROR) {
-                    fprintf(stderr, "GL error: %d\n", err);
-                }
-            }
-
-            glBindVertexArray(crt_vao);
-
-#ifdef DISABLE_CRT_CURVATURE
-            glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
-#else
-            //glDrawArrays(/*GL_TRIANGLES*/ GL_LINE_STRIP, 0, num_triangles * 3);
-            glDrawArrays(GL_TRIANGLES, 0, num_triangles * 3);
-#endif
+            filter_draw(fbo_texture, fbo_size[0], fbo_size[1]);
         } else {
             ImGui::Render();
             int display_w, display_h;
