@@ -238,6 +238,9 @@ int main(int, char**)
                 glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, fbo_size[0], fbo_size[1], 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
                 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
                 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+                // Make sure we get black color when uv coordinate is out of bounds
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER);
                 glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, fbo_texture, 0);
                 if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
                     fprintf(stderr, "Framebuffer not complete\n");
@@ -252,18 +255,22 @@ int main(int, char**)
                     uniform float height;
                     in vec2 position;
                     out vec2 uv;
-                    void main() {
-                        uv = position * 0.5 + 0.5; // + vec2(0.5/width, 0.5/height);
+
+                    vec2 warp(vec2 position) {
+                        vec2 delta = position*0.5;
                         // Warp the gl_Position to get the CRT curvature effect
-                        vec2 delta = uv - 0.5;
                         float delta2 = dot(delta.xy, delta.xy);
                         float delta4 = delta2 * delta2;
                         float warp_factor = 0.25;
                         float delta_offset = delta4 * warp_factor;
 
-                        vec2 tmp = uv - delta * delta_offset;
-                        gl_Position = vec4(tmp * 2.0 - 1.0, 0.0, 1.0);
+                        return (uv - delta * delta_offset)*2.0 - 1.0;
+                    }
+
+                    void main() {
+                        uv = position * 0.5 + 0.5; // + vec2(0.5/width, 0.5/height);
                         //gl_Position = vec4(position, 0.0, 1.0);
+                        gl_Position = vec4(warp(position), 0.0, 1.0);
                         //uv = vec2(0.999, 0.999);
                     }
                 )";
@@ -289,8 +296,19 @@ int main(int, char**)
                                                          0.0449101796);
                     uniform int num_weights = 4;
 
+                    vec2 warp(vec2 uv) {
+                        // Warp the gl_Position to get the CRT curvature effect
+                        vec2 delta = uv - 0.5;
+                        float delta2 = dot(delta.xy, delta.xy);
+                        float delta4 = delta2 * delta2;
+                        float warp_factor = 0.25;
+                        float delta_offset = delta4 * warp_factor;
+
+                        return uv + delta * delta_offset;
+                    }
 
                     vec4 phosphor(sampler2D tex, vec2 uv, vec2 resolution) {
+                        //uv = warp(uv);
                         vec2 fpx = uv * resolution;
                         // Compute the fragment color
                         vec4 color = 1.25*texture(tex, uv);
