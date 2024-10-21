@@ -21,6 +21,7 @@
 #endif
 #include <GLFW/glfw3.h> // Will drag system OpenGL headers
 
+#include <atomic>
 #include <vector>
 
 // [Win32] Our example includes a copy of glfw3.lib pre-compiled with VS2010 to maximize ease of testing and compatibility with old VS compilers.
@@ -35,8 +36,8 @@
 #include "../libs/emscripten/emscripten_mainloop_stub.h"
 #endif
 
-int upscale_x = 3;
-int upscale_y = 6;
+int upscale_x = 1;
+int upscale_y = 1;
 
 static void glfw_error_callback(int error, const char* description)
 {
@@ -46,6 +47,9 @@ static void glfw_error_callback(int error, const char* description)
 // Main code
 int main(int, char**)
 {
+    static std::atomic_bool running;
+    running = false;
+
     glfwSetErrorCallback(glfw_error_callback);
     if (!glfwInit())
         return 1;
@@ -78,22 +82,20 @@ int main(int, char**)
     // int fbo_size[2] = { 320, 240 };
     // int upscale = 4;
     // We need an upscale of a multiple of 3 to get the correct CRT shader effect
-    int fbo_size[2] = {640, 240};
+    int fbo_size[2] = {640, 2*240};
     int window_size[2] = {fbo_size[0] * upscale_x, fbo_size[1] * upscale_y};
     bool use_crt_shader = true;
 
     // Create window with graphics context
-    glfwWindowHint(GLFW_SAMPLES, 4);
     GLFWwindow* window = glfwCreateWindow(window_size[0], window_size[1], "Dear ImGui GLFW+OpenGL3 example", nullptr, nullptr);
     if (window == nullptr)
         return 1;
     glfwMakeContextCurrent(window);
     glfwSwapInterval(2); // Enable vsync. Setting interval to 1 fails to give 60 Hz on my machine, use 30 Hz instead.
 
+#if !defined(IMGUI_IMPL_OPENGL_ES2)
     glewInit();
-
-    // Turn on 4x MSAA
-    glEnable(GL_MULTISAMPLE);
+#endif
 
     GLuint fbo{ 0 };
     GLuint fbo_texture{ 0 };
@@ -107,14 +109,22 @@ int main(int, char**)
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
         // Make sure we get black color when uv coordinate is out of bounds
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, fbo_texture, 0);
         if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
             fprintf(stderr, "Framebuffer not complete\n");
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
-        filter_init(window_size[0], window_size[1]);
+        // filter_init uses viewport size to determine window size
+        glViewport(0, 0, window_size[0], window_size[1]);
+        filter_init();
+
+        filter_register_callback([]() {
+            // This is called when the filter needs to be redrawn
+            if (running)
+                glfwPostEmptyEvent();
+        });
     }
 
     // Setup Dear ImGui context
@@ -129,7 +139,7 @@ int main(int, char**)
     // Setup Dear ImGui style
     ImGui::StyleColorsDark();
     // ImGui::StyleColorsLight();
-    float scale = use_crt_shader ? 1.0f : upscale_x;
+    float scale = 3.0;
     ImGui::GetStyle().ScaleAllSizes(scale); // Scale UI
 
     // Setup Platform/Renderer backends
@@ -164,6 +174,7 @@ int main(int, char**)
     ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
 
     // Main loop
+    running = true;
 #ifdef __EMSCRIPTEN__
     // For an Emscripten build we are disabling file-system access, so let's not attempt to do a fopen() of the imgui.ini file.
     // You may manually call LoadIniSettingsFromMemory() to load settings from your own storage.
@@ -178,7 +189,8 @@ int main(int, char**)
         // - When io.WantCaptureMouse is true, do not dispatch mouse input data to your main application, or clear/overwrite your copy of the mouse data.
         // - When io.WantCaptureKeyboard is true, do not dispatch keyboard input data to your main application, or clear/overwrite your copy of the keyboard data.
         // Generally you may always pass all inputs to dear imgui, and hide them from your application based on those two flags.
-        glfwPollEvents();
+        //glfwPollEvents();
+        glfwWaitEvents();
 
         // If GLFW reports that key F11 was pressed, toggle fullscreen
         static bool toggle = false;
@@ -206,6 +218,11 @@ int main(int, char**)
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
+
+        // int width, height;
+        // glfwGetWindowSize(window, &width, &height);
+        // ImGui::SetNextWindowSize(ImVec2(width, height)); // ensures ImGui fits the GLFW window
+        // ImGui::SetNextWindowPos(ImVec2(0, 0));
 
         // 1. Show the big demo window (Most of the sample code is in ImGui::ShowDemoWindow()! You can browse its code to learn more about Dear ImGui!).
         if (show_demo_window)
@@ -250,6 +267,19 @@ int main(int, char**)
         if (use_crt_shader) {
             ImGui::Render();
 
+            int display_w, display_h;
+            glfwGetFramebufferSize(window, &display_w, &display_h);
+            if (display_w != fbo_size[0] || display_h != fbo_size[1]) {
+                // Resize the FBO and texture
+                fbo_size[0] = display_w;
+                fbo_size[1] = display_h;
+                glBindTexture(GL_TEXTURE_2D, fbo_texture);
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, fbo_size[0], fbo_size[1], 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+                glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+                glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, fbo_texture, 0);
+                glBindFramebuffer(GL_FRAMEBUFFER, 0);
+            }
+
             // Make the FBO current and draw all the IMGUI stuff to it
             glBindFramebuffer(GL_FRAMEBUFFER, fbo);
             glViewport(0, 0, fbo_size[0], fbo_size[1]);
@@ -259,14 +289,6 @@ int main(int, char**)
             ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
             glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
-            // Prepare the window surface
-            int display_w, display_h;
-            glfwGetFramebufferSize(window, &display_w, &display_h);
-            // Center the FBO in the window and scale proportionally to fit the window
-            float s = std::min((float)display_w / window_size[0], (float)display_h / window_size[1]);
-            int x = (display_w - s*window_size[0]) / 2;
-            int y = (display_h - s*window_size[1]) / 2;
-            glViewport(x, y, s*window_size[0], s*window_size[1]);
             glClearColor(0, 0, 0, 1);
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
 
@@ -283,6 +305,7 @@ int main(int, char**)
 
         glfwSwapBuffers(window);
     }
+    running = false;
 #ifdef __EMSCRIPTEN__
     EMSCRIPTEN_MAINLOOP_END;
 #endif

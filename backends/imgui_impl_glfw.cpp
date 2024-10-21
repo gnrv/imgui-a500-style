@@ -802,7 +802,7 @@ void ImGui_ImplGlfw_NewFrame()
     glfwGetWindowSize(bd->Window, &w, &h);
     glfwGetFramebufferSize(bd->Window, &display_w, &display_h);
     // Hack
-    w = display_w = 640; h = 480; display_h = 240;
+    // w = display_w = 640; h = 480; display_h = 240;
     io.DisplaySize = ImVec2((float)w, (float)h);
     if (w > 0 && h > 0)
         io.DisplayFramebufferScale = ImVec2((float)display_w / (float)w, (float)display_h / (float)h);

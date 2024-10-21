@@ -2,24 +2,40 @@
 
 #if defined(IMGUI_IMPL_OPENGL_ES2)
 #include <GLES2/gl2.h>
+#define GL_GLEXT_PROTOTYPES
+#include <GLES2/gl2ext.h>
 
-#define LOGE(...) ALOGE(__VA_ARGS__)
+#define glBindVertexArray       glBindVertexArrayOES
+#define glGenVertexArrays       glGenVertexArraysOES
+#define glDeleteVertexArrays    glDeleteVertexArraysOES
+#define GL_VERTEX_ARRAY_BINDING GL_VERTEX_ARRAY_BINDING_OES
+
 #else
 #include <GL/glew.h>
+#endif
+
 #include <stdio.h>
 
 #define LOGE(...) fprintf(stderr, __VA_ARGS__)
-#endif
 
+#include <atomic>
+#include <string>
+#include <thread>
 #include <vector>
 
 //#define DISABLE_CRT_CURVATURE
+
+#if defined(IMGUI_IMPL_OPENGL_ES2)
+static std::string glsl_version{"#version 100\nprecision highp float;"};
+#else
+static std::string glsl_version{"#version 130"};
+#endif
 
 class CrtEffect {
     GLuint crt_shader{0};
     GLuint crt_vao{0};
     GLuint crt_vbo{0};
-    GLuint locations[4]{0, 0, 0, 0};
+    GLuint locations[6]{0, 0, 0, 0, 0, 0};
 
     int num_triangles{0};
 
@@ -31,12 +47,11 @@ public:
 
 static CrtEffect* crt_effect = nullptr;
 
-static const char* vs_src = R"(
-    #version 130
+static std::string vs_src = R"(
     uniform float width;
     uniform float height;
     in vec2 position;
-    out vec2 uv;
+    varying vec2 uv;
 
     vec2 warp(vec2 position) {
         vec2 delta = position*0.5;
@@ -58,22 +73,18 @@ static const char* vs_src = R"(
 )";
 
 // Inspired by https://www.gamedeveloper.com/programming/shader-tutorial-crt-emulation
-static const char* fs_src = R"(
-    #version 130
+static std::string fs_src = R"(
     uniform sampler2D tex;
     in vec2 uv;
-    out vec4 frag_color;
     uniform float width;
     uniform float height;
     uniform float scanline;
 
-    //uniform float offset[5] = float[](0.0, 1.0, 2.0, 3.0, 4.0);
-    //uniform float weight[5] = float[](0.2270270270, 0.1945945946, 0.1216216216,
-    //                                   0.0540540541, 0.0162162162);
-    uniform float offset[4] = float[](0.0, 1.0, 2.0, 3.0);
-    uniform float weight[4] =    float[](0.2514970059, 0.2095808383, 0.1197604790,
-                                            0.0449101796);
-    uniform int num_weights = 4;
+    uniform float offset[5]; // = float[](0.0, 1.0, 2.0, 3.0, 4.0);
+    uniform float weight[5]; // = float[](0.2270270270, 0.1945945946, 0.1216216216, 0.0540540541, 0.0162162162);
+    // float offset[4] = float[](0.0, 1.0, 2.0, 3.0);
+    // float weight[4] =    float[](0.2514970059, 0.2095808383, 0.1197604790, 0.0449101796);
+    int num_weights = 5;
 
     vec2 warp(vec2 uv) {
         // Warp the gl_Position to get the CRT curvature effect
@@ -90,7 +101,7 @@ static const char* fs_src = R"(
         //uv = warp(uv);
         vec2 fpx = uv * resolution;
         // Compute the fragment color
-        vec4 color = 1.25*texture(tex, uv);
+        vec4 color = 1.25*texture2D(tex, uv);
         // scanline
         if (floor(fpx.y) == scanline) {
             color = color * 1.5 / 1.25;
@@ -102,7 +113,7 @@ static const char* fs_src = R"(
         // blue component only.
         // First, compute the fractional pixel value in the range [0, 1)
         // Using fmod
-        fpx = 1.0*(fpx - floor(fpx));
+        fpx = mod(fpx, 3.0)/3.0;
         vec4 bal = vec4(1, 0.9, 1, 1.0);
         vec4 f = 0.3 * bal;
         if (fpx.x < 0.33) {
@@ -121,7 +132,7 @@ static const char* fs_src = R"(
     }
 
     vec4 blur(sampler2D image, vec2 uv, vec2 resolution, float radius) {
-        vec4 color = 2*phosphor(image, uv, resolution) * weight[0];
+        vec4 color = 2.0*phosphor(image, uv, resolution) * weight[0];
         for (int i = 1; i < num_weights; i++) {
             color += phosphor(image, uv + vec2(offset[i] * radius / resolution.x, 0.0), resolution) * weight[i];
             color += phosphor(image, uv - vec2(offset[i] * radius / resolution.x, 0.0), resolution) * weight[i];
@@ -131,17 +142,17 @@ static const char* fs_src = R"(
 
     void main() {
         // Debug uv coords
-        //frag_color = vec4(uv, 0.0, 1.0);
+        //gl_FragColor = vec4(uv, 0.0, 1.0);
         // Fractional pixel value
         //vec2 px = gl_FragCoord.xy;
-        //frag_color = texture(tex, px / vec2(width, height));
+        //gl_FragColor = texture2D(tex, px / vec2(width, height));
         // The problem with gl_FragCoord is it's not interpolated.
         // We need fractional pixel values.
         // We can get that by passing the position from the vertex shader
         // and interpolating it here.
-        //frag_color = texture(tex, uv);
-        //frag_color = phosphor(tex, uv, vec2(width, height));
-        frag_color = blur(tex, uv, vec2(width, height), 1.0);
+        //gl_FragColor = texture2D(tex, uv);
+        //gl_FragColor = phosphor(tex, uv, vec2(width, height));
+        gl_FragColor = blur(tex, uv, vec2(width, height), 1.0);
     }
 )";
 
@@ -150,11 +161,15 @@ CrtEffect::CrtEffect(int window_width, int window_height)
     // To get us started, use a simple blit shader to copy the contents of the FBO to the window
     crt_shader = glCreateProgram();
     GLuint vs = glCreateShader(GL_VERTEX_SHADER);
-    glShaderSource(vs, 1, &vs_src, NULL);
+    std::string src = glsl_version + "\n" + vs_src;
+    const char *src_cstr = src.c_str();
+    glShaderSource(vs, 1, &src_cstr, NULL);
     glCompileShader(vs);
     glAttachShader(crt_shader, vs);
     GLuint fs = glCreateShader(GL_FRAGMENT_SHADER);
-    glShaderSource(fs, 1, &fs_src, NULL);
+    src = glsl_version + "\n" + fs_src;
+    src_cstr = src.c_str();
+    glShaderSource(fs, 1, &src_cstr, NULL);
     glCompileShader(fs);
     glAttachShader(crt_shader, fs);
     glLinkProgram(crt_shader);
@@ -176,6 +191,8 @@ CrtEffect::CrtEffect(int window_width, int window_height)
     locations[i++] = glGetUniformLocation(crt_shader, "width");
     locations[i++] = glGetUniformLocation(crt_shader, "height");
     locations[i++] = glGetUniformLocation(crt_shader, "scanline");
+    locations[i++] = glGetUniformLocation(crt_shader, "offset");
+    locations[i++] = glGetUniformLocation(crt_shader, "weight");
 
 #ifdef DISABLE_CRT_CURVATURE
     glGenVertexArrays(1, &crt_vao);
@@ -244,7 +261,18 @@ CrtEffect::CrtEffect(int window_width, int window_height)
     while ((err = glGetError()) != GL_NO_ERROR) {
         LOGE("GL error: %d\n", err);
     }
+
+    //uniform float offset[5]; // = float[](0.0, 1.0, 2.0, 3.0, 4.0);
+    //uniform float weight[5]; // = float[](0.2270270270, 0.1945945946, 0.1216216216, 0.0540540541, 0.0162162162);
+    // Set the offset and weight uniforms
+    float offset[5] = {0.0, 1.0, 2.0, 3.0, 4.0};
+    float weight[5] = {0.2270270270, 0.1945945946, 0.1216216216, 0.0540540541, 0.0162162162};
+    glUseProgram(crt_shader);
+    glUniform1fv(locations[4], 5, offset);
+    glUniform1fv(locations[5], 5, weight);
 }
+
+static std::atomic_int scanline;
 
 void CrtEffect::draw(int fbo_texture, int fbo_width, int fbo_height)
 {
@@ -255,11 +283,8 @@ void CrtEffect::draw(int fbo_texture, int fbo_width, int fbo_height)
     glUniform1i(locations[0], 0);
     glUniform1f(locations[1], fbo_width);
     glUniform1f(locations[2], fbo_height);
-    static float scanline = 0;
-    ++scanline;
-    if (scanline == fbo_height)
-        scanline = 0;
-    glUniform1f(locations[3], scanline);
+
+    glUniform1f(locations[3], static_cast<float>(scanline % fbo_height));
 
     glBindVertexArray(crt_vao);
 
@@ -271,12 +296,15 @@ void CrtEffect::draw(int fbo_texture, int fbo_width, int fbo_height)
 #endif
 }
 
-void filter_init(int width, int height)
+void filter_init()
 {
     if (crt_effect)
         return;
 
-    crt_effect = new CrtEffect(width, height);
+    // Get the viewport from OpenGL state
+    GLint viewport[4];
+    glGetIntegerv(GL_VIEWPORT, viewport);
+    crt_effect = new CrtEffect(viewport[2], viewport[3]);
 }
 
 void filter_draw(int fbo_texture, int width, int height)
@@ -284,10 +312,20 @@ void filter_draw(int fbo_texture, int width, int height)
     if (!crt_effect)
         return;
 
-    // Get the viewport from OpenGL state
-    GLint viewport[4];
-    glGetIntegerv(GL_VIEWPORT, viewport);
-
-
     crt_effect->draw(fbo_texture, width, height);
+}
+
+void filter_register_callback(void (*callback)())
+{
+    // Spawn a thread that will call the callback function 30 times per second
+    // This is used to animate the CRT effect
+    std::thread t([callback]() {
+        scanline = 0;
+        while (true) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1000 / 30));
+            ++scanline;
+            callback();
+        }
+    });
+    t.detach();
 }
