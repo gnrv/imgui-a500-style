@@ -16,14 +16,72 @@
 #include <GLES3/gl3.h>
 #include <string>
 
+#include <dlfcn.h>
+
 // Data
 static EGLDisplay           g_EglDisplay = EGL_NO_DISPLAY;
 static EGLSurface           g_EglSurface = EGL_NO_SURFACE;
 static EGLContext           g_EglContext = EGL_NO_CONTEXT;
 static struct android_app*  g_App = nullptr;
 static bool                 g_Initialized = false;
+static ALooper*             g_MainLooper = nullptr;
 static char                 g_LogTag[] = "ImGuiExample";
 static std::string          g_IniFilename = "";
+constexpr bool use_crt_shader = true;
+static GLuint fbo{ 0 };
+static GLuint fbo_texture{ 0 };
+static int fbo_size[2];
+
+struct gl_functions {
+    unsigned int (*CreateProgram)();
+    unsigned int (*CreateShader)(unsigned int type);
+    void (*ShaderSource)(unsigned int shader, int count, const char *const*string, const int *length);
+    void (*CompileShader)(unsigned int shader);
+    void (*AttachShader)(unsigned int program, unsigned int shader);
+    void (*LinkProgram)(unsigned int program);
+    void (*GetShaderiv)(unsigned int shader, unsigned int pname, int *params);
+    void (*GetProgramiv)(unsigned int program, unsigned int pname, int *params);
+    void (*GetShaderInfoLog)(unsigned int shader, int bufSize, int *length, char *infoLog);
+    void (*GetProgramInfoLog)(unsigned int program, int bufSize, int *length, char *infoLog);
+    int (*GetUniformLocation)(unsigned int program, const char *name);
+    int (*GetAttribLocation)(unsigned int program, const char *name);
+    void (*DeleteShader)(unsigned int shader);
+    void (*DeleteProgram)(unsigned int program);
+    void (*UseProgram)(unsigned int program);
+    void (*GenBuffers)(int n, unsigned int *buffers);
+    void (*DeleteBuffers)(int n, const unsigned int *buffers);
+    void (*BindBuffer)(unsigned int target, unsigned int buffer);
+    void (*BufferData)(unsigned int target, long size, const void *data, unsigned int usage);
+    unsigned int (*GetError)();
+    void (*Uniform1fv)(int location, int count, const float *value);
+    void (*Uniform1f)(int location, float v0);
+    void (*Uniform1i)(int location, int v0);
+    void (*GetIntegerv)(unsigned int pname, int *params);
+    void (*Viewport)(int x, int y, int width, int height);
+    void (*ClearColor)(float red, float green, float blue, float alpha);
+    void (*Clear)(unsigned int mask);
+    void (*BindFramebuffer)(unsigned int target, unsigned int framebuffer);
+    void (*GenFramebuffers)(int n, unsigned int *framebuffers);
+    void (*GenTextures)(int n, unsigned int *textures);
+    void (*BindTexture)(unsigned int target, unsigned int texture);
+    void (*ActiveTexture)(unsigned int texture);
+    void (*VertexAttribPointer)(unsigned int index, int size, unsigned int type, unsigned char normalized, int stride, const void *pointer);
+    void (*EnableVertexAttribArray)(unsigned int index);
+    void (*DrawArrays)(unsigned int mode, int first, int count);
+    void (*DisableVertexAttribArray)(unsigned int index);
+    void (*TexImage2D)(unsigned int target, int level, int internalformat, int width, int height, int border, unsigned int format, unsigned int type, const void *pixels);
+    void (*TexParameteri)(unsigned int target, unsigned int pname, int param);
+    void (*FramebufferTexture2D)(unsigned int target, unsigned int attachment, unsigned int textarget, unsigned int texture, int level);
+    unsigned int (*CheckFramebufferStatus)(unsigned int target);
+    void (*DeleteFramebuffers)(int n, const unsigned int *framebuffers);
+    void (*DeleteTextures)(int n, const unsigned int *textures);
+};
+
+static void (*filter_init)(const char *, struct gl_functions *);
+static void (*filter_gl_context_lost)();
+static void (*filter_gl_context_restored)();
+static void (*filter_draw)(int tex, int width, int height);
+static void (*filter_register_callback)(void (*callback)());
 
 // Forward declarations of helper functions
 static void Init(struct android_app* app);
@@ -93,11 +151,25 @@ void android_main(struct android_app* app)
 
 void Init(struct android_app* app)
 {
+    static void* handle = dlopen("libcrtfilter.so", RTLD_LAZY);
+    static const char *msg = nullptr;
+    static std::string message((msg = dlerror()) ? msg : "no error");
+    if (handle) {
+        // dlsym the functions from "filter.h"
+        filter_init = (void (*)(const char *, struct gl_functions *gl))dlsym(handle, "filter_init");
+        filter_gl_context_lost = (void (*)())dlsym(handle, "filter_gl_context_lost");
+        filter_gl_context_restored = (void (*)())dlsym(handle, "filter_gl_context_restored");
+        filter_draw = (void (*)(int, int, int))dlsym(handle, "filter_draw");
+        filter_register_callback = (void (*)(void (*)()))dlsym(handle, "filter_register_callback");
+        //dlclose(handle);
+    }
+
     if (g_Initialized)
         return;
 
     g_App = app;
     ANativeWindow_acquire(g_App->window);
+    g_MainLooper = ALooper_forThread();
 
     // Initialize EGL
     // This is mostly boilerplate code for EGL...
@@ -188,6 +260,92 @@ void Init(struct android_app* app)
     // FIXME: Put some effort into DPI awareness
     ImGui::GetStyle().ScaleAllSizes(3.0f);
 
+    static bool filter_initialized = false;
+
+    if (use_crt_shader) {
+        fbo_size[0] = (int)io.DisplaySize.x;
+        fbo_size[1] = (int)io.DisplaySize.y;
+        int window_size[2] = {fbo_size[0], fbo_size[1]};
+
+        glGenFramebuffers(1, &fbo);
+        glGenTextures(1, &fbo_texture);
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+        glBindTexture(GL_TEXTURE_2D, fbo_texture);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, fbo_size[0], fbo_size[1], 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        // Make sure we get black color when uv coordinate is out of bounds
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, fbo_texture, 0);
+        if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+            fprintf(stderr, "Framebuffer not complete\n");
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+        // filter_init uses viewport size to determine window size
+        glViewport(0, 0, window_size[0], window_size[1]);
+        if (filter_initialized) {
+            if (filter_gl_context_restored)
+                filter_gl_context_restored();
+        } else {
+            static gl_functions gl = {
+    glCreateProgram,
+    glCreateShader,
+    glShaderSource,
+    glCompileShader,
+    glAttachShader,
+    glLinkProgram,
+    glGetShaderiv,
+    glGetProgramiv,
+    glGetShaderInfoLog,
+    glGetProgramInfoLog,
+    glGetUniformLocation,
+    glGetAttribLocation,
+    glDeleteShader,
+    glDeleteProgram,
+    glUseProgram,
+    glGenBuffers,
+    glDeleteBuffers,
+    glBindBuffer,
+    glBufferData,
+    glGetError,
+    glUniform1fv,
+    glUniform1f,
+    glUniform1i,
+    glGetIntegerv,
+    glViewport,
+    glClearColor,
+    glClear,
+    glBindFramebuffer,
+    glGenFramebuffers,
+    glGenTextures,
+    glBindTexture,
+    glActiveTexture,
+    glVertexAttribPointer,
+    glEnableVertexAttribArray,
+    glDrawArrays,
+    glDisableVertexAttribArray,
+    glTexImage2D,
+    glTexParameteri,
+    glFramebufferTexture2D,
+    glCheckFramebufferStatus,
+    glDeleteFramebuffers,
+    glDeleteTextures
+            };
+            if (filter_init)
+                filter_init((std::string(g_App->activity->internalDataPath) + "/crtfilter.log").c_str(), &gl);
+
+            if (filter_register_callback)
+                filter_register_callback([]() {
+                    // This is called when the filter needs to be redrawn
+                    if (g_MainLooper)
+                        ALooper_wake(g_MainLooper);
+                });
+
+            filter_initialized = true;
+        }
+    }
+
     g_Initialized = true;
 }
 
@@ -257,10 +415,39 @@ void MainLoopStep()
 
     // Rendering
     ImGui::Render();
-    glViewport(0, 0, (int)io.DisplaySize.x, (int)io.DisplaySize.y);
-    glClearColor(clear_color.x * clear_color.w, clear_color.y * clear_color.w, clear_color.z * clear_color.w, clear_color.w);
-    glClear(GL_COLOR_BUFFER_BIT);
-    ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+    if (use_crt_shader) {
+        int display_w = (int)io.DisplaySize.x, display_h = (int)io.DisplaySize.y;
+        if (display_w != fbo_size[0] || display_h != fbo_size[1]) {
+            // Resize the FBO and texture
+            fbo_size[0] = display_w;
+            fbo_size[1] = display_h;
+            glBindTexture(GL_TEXTURE_2D, fbo_texture);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, fbo_size[0], fbo_size[1], 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+            glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, fbo_texture, 0);
+            glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        }
+
+        // Make the FBO current and draw all the IMGUI stuff to it
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+        glViewport(0, 0, fbo_size[0], fbo_size[1]);
+        glClearColor(clear_color.x * clear_color.w, clear_color.y * clear_color.w, clear_color.z * clear_color.w, clear_color.w);
+        glClear(GL_COLOR_BUFFER_BIT);
+        // The viewport used for glClear will not be used by ImGUI, it will apply its own state to GL and restore our state before returning
+        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+        glClearColor(0, 0, 0, 1);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
+
+        if (filter_draw)
+            filter_draw(fbo_texture, fbo_size[0], fbo_size[1]);
+    } else {
+        glViewport(0, 0, (int)io.DisplaySize.x, (int)io.DisplaySize.y);
+        glClearColor(clear_color.x * clear_color.w, clear_color.y * clear_color.w, clear_color.z * clear_color.w, clear_color.w);
+        glClear(GL_COLOR_BUFFER_BIT);
+        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+    }
     eglSwapBuffers(g_EglDisplay, g_EglSurface);
 }
 
@@ -268,6 +455,11 @@ void Shutdown()
 {
     if (!g_Initialized)
         return;
+
+    g_MainLooper = nullptr;
+
+    if (filter_gl_context_lost)
+        filter_gl_context_lost();
 
     // Cleanup
     ImGui_ImplOpenGL3_Shutdown();
