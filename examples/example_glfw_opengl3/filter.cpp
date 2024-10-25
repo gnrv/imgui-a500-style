@@ -26,7 +26,7 @@ static char                 g_LogTag[] = "ImGuiExample";
 #include <thread>
 #include <vector>
 
-#define DISABLE_CRT_CURVATURE
+//#define DISABLE_CRT_CURVATURE
 
 #if defined(IMGUI_IMPL_OPENGL_ES2)
 static std::string glsl_version{"#version 100\nprecision highp float;"};
@@ -51,6 +51,8 @@ class CrtEffect final {
     GLuint crt_vbo{0};
     GLuint locations[6]{0, 0, 0, 0, 0, 0};
     GLuint pos{0};
+
+    GLuint green_tex{0};
 
     int num_triangles{0};
 
@@ -82,8 +84,8 @@ static std::string vs_src = R"(
 
     void main() {
         uv = position * 0.5 + 0.5; // + vec2(0.5/width, 0.5/height);
-        gl_Position = vec4(position, 0.0, 1.0);
-        //gl_Position = vec4(warp(position), 0.0, 1.0);
+        //gl_Position = vec4(position, 0.0, 1.0);
+        gl_Position = vec4(warp(position), 0.0, 1.0);
         //uv = vec2(0.999, 0.999);
     }
 )";
@@ -167,9 +169,9 @@ static std::string fs_src = R"(
         // We can get that by passing the position from the vertex shader
         // and interpolating it here.
         //gl_FragColor = vec4(0.0, 1.0, 0.0, 1.0);
-        gl_FragColor = texture2D(tex, uv);
+        //gl_FragColor = texture2D(tex, uv);
         //gl_FragColor = phosphor(tex, uv, vec2(width, height));
-        //gl_FragColor = blur(tex, uv, vec2(width, height), 1.0);
+        gl_FragColor = blur(tex, uv, vec2(width, height), 1.0);
     }
 )";
 
@@ -338,6 +340,16 @@ CrtEffect::CrtEffect(int window_width, int window_height)
     gl->Uniform1fv(locations[5], 5, weight);
     gl->UseProgram(0);
 
+    // Generate a texture with a green color
+    gl->GenTextures(1, &green_tex);
+    gl->BindTexture(GL_TEXTURE_2D, green_tex);
+    float green[] = {1.0f, 0.0f, 0.0f, 1.0f};
+    gl->TexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1, 1, 0, GL_RGBA, GL_FLOAT, green);
+    gl->TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    gl->TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    gl->TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    gl->TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
     TRACE("   exit CrtEffect::CrtEffect\n");
 }
 
@@ -346,6 +358,7 @@ CrtEffect::~CrtEffect()
     TRACE("   CrtEffect::~CrtEffect\n");
     gl->DeleteProgram(crt_shader);
     gl->DeleteBuffers(1, &crt_vbo);
+    gl->DeleteTextures(1, &green_tex);
     TRACE("   exit CrtEffect::~CrtEffect\n");
 }
 
@@ -372,12 +385,14 @@ void CrtEffect::draw(int fbo_texture, int fbo_width, int fbo_height)
     TRACE("      glUniform1f\n");
     gl->Uniform1f(locations[3], static_cast<float>(scanline % fbo_height));
 
+    TRACE("      glEnableVertexAttribArray\n");
+    gl->EnableVertexAttribArray(pos);
     TRACE("      glBindBuffer\n");
     gl->BindBuffer(GL_ARRAY_BUFFER, crt_vbo);
     TRACE("      glVertexAttribPointer\n");
     gl->VertexAttribPointer(pos, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(GLfloat), (void*)0);
-    TRACE("      glEnableVertexAttribArray\n");
-    gl->EnableVertexAttribArray(pos);
+    TRACE("      glBindBuffer\n");
+    gl->BindBuffer(GL_ARRAY_BUFFER, 0);
 
     TRACE("      glDrawArrays\n");
 #ifdef DISABLE_CRT_CURVATURE
@@ -386,13 +401,6 @@ void CrtEffect::draw(int fbo_texture, int fbo_width, int fbo_height)
     //glDrawArrays(/*GL_TRIANGLES*/ GL_LINE_STRIP, 0, num_triangles * 3);
     gl->DrawArrays(GL_TRIANGLES, 0, num_triangles * 3);
 #endif
-
-    TRACE("      glDisableVertexAttribArray\n");
-    gl->DisableVertexAttribArray(pos);
-    TRACE("      glBindBuffer\n");
-    gl->BindBuffer(GL_ARRAY_BUFFER, 0);
-    TRACE("      glUseProgram\n");
-    gl->UseProgram(0);
 
     TRACE("   exit CrtEffect::draw\n");
 }
