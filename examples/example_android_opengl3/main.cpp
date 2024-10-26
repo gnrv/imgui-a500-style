@@ -32,55 +32,10 @@ static GLuint fbo{ 0 };
 static GLuint fbo_texture{ 0 };
 static int fbo_size[2];
 
-struct gl_functions {
-    unsigned int (*CreateProgram)();
-    unsigned int (*CreateShader)(unsigned int type);
-    void (*ShaderSource)(unsigned int shader, int count, const char *const*string, const int *length);
-    void (*CompileShader)(unsigned int shader);
-    void (*AttachShader)(unsigned int program, unsigned int shader);
-    void (*LinkProgram)(unsigned int program);
-    void (*GetShaderiv)(unsigned int shader, unsigned int pname, int *params);
-    void (*GetProgramiv)(unsigned int program, unsigned int pname, int *params);
-    void (*GetShaderInfoLog)(unsigned int shader, int bufSize, int *length, char *infoLog);
-    void (*GetProgramInfoLog)(unsigned int program, int bufSize, int *length, char *infoLog);
-    int (*GetUniformLocation)(unsigned int program, const char *name);
-    int (*GetAttribLocation)(unsigned int program, const char *name);
-    void (*DeleteShader)(unsigned int shader);
-    void (*DeleteProgram)(unsigned int program);
-    void (*UseProgram)(unsigned int program);
-    void (*GenBuffers)(int n, unsigned int *buffers);
-    void (*DeleteBuffers)(int n, const unsigned int *buffers);
-    void (*BindBuffer)(unsigned int target, unsigned int buffer);
-    void (*BufferData)(unsigned int target, long size, const void *data, unsigned int usage);
-    unsigned int (*GetError)();
-    void (*Uniform1fv)(int location, int count, const float *value);
-    void (*Uniform1f)(int location, float v0);
-    void (*Uniform1i)(int location, int v0);
-    void (*GetIntegerv)(unsigned int pname, int *params);
-    void (*Viewport)(int x, int y, int width, int height);
-    void (*ClearColor)(float red, float green, float blue, float alpha);
-    void (*Clear)(unsigned int mask);
-    void (*BindFramebuffer)(unsigned int target, unsigned int framebuffer);
-    void (*GenFramebuffers)(int n, unsigned int *framebuffers);
-    void (*GenTextures)(int n, unsigned int *textures);
-    void (*BindTexture)(unsigned int target, unsigned int texture);
-    void (*ActiveTexture)(unsigned int texture);
-    void (*VertexAttribPointer)(unsigned int index, int size, unsigned int type, unsigned char normalized, int stride, const void *pointer);
-    void (*EnableVertexAttribArray)(unsigned int index);
-    void (*DrawArrays)(unsigned int mode, int first, int count);
-    void (*DisableVertexAttribArray)(unsigned int index);
-    void (*TexImage2D)(unsigned int target, int level, int internalformat, int width, int height, int border, unsigned int format, unsigned int type, const void *pixels);
-    void (*TexParameteri)(unsigned int target, unsigned int pname, int param);
-    void (*FramebufferTexture2D)(unsigned int target, unsigned int attachment, unsigned int textarget, unsigned int texture, int level);
-    unsigned int (*CheckFramebufferStatus)(unsigned int target);
-    void (*DeleteFramebuffers)(int n, const unsigned int *framebuffers);
-    void (*DeleteTextures)(int n, const unsigned int *textures);
-};
-
-static void (*filter_init)(const char *, struct gl_functions *);
+static void (*filter_init)(const char *);
 static void (*filter_gl_context_lost)();
 static void (*filter_gl_context_restored)();
-static void (*filter_draw)(int tex, int width, int height);
+static void (*filter_draw)(int tex);
 static void (*filter_register_callback)(void (*callback)());
 
 // Forward declarations of helper functions
@@ -156,10 +111,10 @@ void Init(struct android_app* app)
     static std::string message((msg = dlerror()) ? msg : "no error");
     if (handle) {
         // dlsym the functions from "filter.h"
-        filter_init = (void (*)(const char *, struct gl_functions *gl))dlsym(handle, "filter_init");
+        filter_init = (void (*)(const char *))dlsym(handle, "filter_init");
         filter_gl_context_lost = (void (*)())dlsym(handle, "filter_gl_context_lost");
         filter_gl_context_restored = (void (*)())dlsym(handle, "filter_gl_context_restored");
-        filter_draw = (void (*)(int, int, int))dlsym(handle, "filter_draw");
+        filter_draw = (void (*)(int))dlsym(handle, "filter_draw");
         filter_register_callback = (void (*)(void (*)()))dlsym(handle, "filter_register_callback");
         //dlclose(handle);
     }
@@ -288,52 +243,8 @@ void Init(struct android_app* app)
             if (filter_gl_context_restored)
                 filter_gl_context_restored();
         } else {
-            static gl_functions gl = {
-    glCreateProgram,
-    glCreateShader,
-    glShaderSource,
-    glCompileShader,
-    glAttachShader,
-    glLinkProgram,
-    glGetShaderiv,
-    glGetProgramiv,
-    glGetShaderInfoLog,
-    glGetProgramInfoLog,
-    glGetUniformLocation,
-    glGetAttribLocation,
-    glDeleteShader,
-    glDeleteProgram,
-    glUseProgram,
-    glGenBuffers,
-    glDeleteBuffers,
-    glBindBuffer,
-    glBufferData,
-    glGetError,
-    glUniform1fv,
-    glUniform1f,
-    glUniform1i,
-    glGetIntegerv,
-    glViewport,
-    glClearColor,
-    glClear,
-    glBindFramebuffer,
-    glGenFramebuffers,
-    glGenTextures,
-    glBindTexture,
-    glActiveTexture,
-    glVertexAttribPointer,
-    glEnableVertexAttribArray,
-    glDrawArrays,
-    glDisableVertexAttribArray,
-    glTexImage2D,
-    glTexParameteri,
-    glFramebufferTexture2D,
-    glCheckFramebufferStatus,
-    glDeleteFramebuffers,
-    glDeleteTextures
-            };
             if (filter_init)
-                filter_init((std::string(g_App->activity->internalDataPath) + "/crtfilter.log").c_str(), &gl);
+                filter_init((std::string(g_App->activity->internalDataPath) + "/crtfilter.log").c_str());
 
             if (filter_register_callback)
                 filter_register_callback([]() {
@@ -441,7 +352,7 @@ void MainLoopStep()
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
 
         if (filter_draw)
-            filter_draw(fbo_texture, fbo_size[0], fbo_size[1]);
+            filter_draw(fbo_texture);
     } else {
         glViewport(0, 0, (int)io.DisplaySize.x, (int)io.DisplaySize.y);
         glClearColor(clear_color.x * clear_color.w, clear_color.y * clear_color.w, clear_color.z * clear_color.w, clear_color.w);

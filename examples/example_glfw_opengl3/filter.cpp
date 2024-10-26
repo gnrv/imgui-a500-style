@@ -35,6 +35,7 @@ static std::string glsl_version{"#version 130"};
 #endif
 
 static FILE* logfile = nullptr;
+#ifdef ENABLE_TRACE
 void TRACE(const char* fmt, ...) {
     if (!logfile) return;
     va_list args;
@@ -43,8 +44,9 @@ void TRACE(const char* fmt, ...) {
     fflush(logfile);
     va_end(args);
 }
-
-static gl_functions *gl = nullptr;
+#else
+#define TRACE(...)
+#endif
 
 class CrtEffect final {
     GLuint crt_shader{0};
@@ -55,12 +57,15 @@ class CrtEffect final {
     GLuint green_tex{0};
 
     int num_triangles{0};
+    int width{0};
+    int height{0};
 
 public:
     CrtEffect(int window_width, int window_height);
     ~CrtEffect();
 
     void draw(int fbo_texture, int fbo_width, int fbo_height);
+    void draw(int fbo_texture);
 };
 
 static CrtEffect* crt_effect = nullptr;
@@ -176,101 +181,102 @@ static std::string fs_src = R"(
 )";
 
 CrtEffect::CrtEffect(int window_width, int window_height)
+    : width(window_width), height(window_height)
 {
-    if (window_width < 16) {
-        window_width = 16;
+    if (width < 16) {
+        width = 16;
     }
-    if (window_height < 16) {
-        window_height = 16;
+    if (height < 16) {
+        height = 16;
     }
-    TRACE("   CrtEffect::CrtEffect(%d, %d)\n", window_width, window_height);
+    TRACE("   CrtEffect::CrtEffect(%d, %d)\n", width, height);
 
     // To get us started, use a simple blit shader to copy the contents of the FBO to the window
     TRACE("   create vertex shader\n");
 
-    crt_shader = gl->CreateProgram();
-    GLuint vs = gl->CreateShader(GL_VERTEX_SHADER);
+    crt_shader = glCreateProgram();
+    GLuint vs = glCreateShader(GL_VERTEX_SHADER);
     std::string src = glsl_version + "\n" + vs_src;
     const char *src_cstr = src.c_str();
-    gl->ShaderSource(vs, 1, &src_cstr, NULL);
-    gl->CompileShader(vs);
+    glShaderSource(vs, 1, &src_cstr, NULL);
+    glCompileShader(vs);
     GLint isCompiled = 0;
-    gl->GetShaderiv(vs, GL_COMPILE_STATUS, &isCompiled);
+    glGetShaderiv(vs, GL_COMPILE_STATUS, &isCompiled);
     if(isCompiled == GL_FALSE)
     {
         GLint maxLength = 0;
-        gl->GetShaderiv(vs, GL_INFO_LOG_LENGTH, &maxLength);
+        glGetShaderiv(vs, GL_INFO_LOG_LENGTH, &maxLength);
 
         // The maxLength includes the NULL character
         std::vector<GLchar> errorLog(maxLength);
-        gl->GetShaderInfoLog(vs, maxLength, &maxLength, &errorLog[0]);
+        glGetShaderInfoLog(vs, maxLength, &maxLength, &errorLog[0]);
 
         // Provide the infolog in whatever manor you deem best.
         LOGE("Vertex shader compilation failed: %s\n", errorLog.data());
         TRACE("   Vertex shader compilation failed: %s\n", errorLog.data());
 
         // Exit with failure.
-        gl->DeleteShader(vs); // Don't leak the shader.
+        glDeleteShader(vs); // Don't leak the shader.
         return;
     }
-    gl->AttachShader(crt_shader, vs);
+    glAttachShader(crt_shader, vs);
 
     TRACE("   create fragment shader\n");
-    GLuint fs = gl->CreateShader(GL_FRAGMENT_SHADER);
+    GLuint fs = glCreateShader(GL_FRAGMENT_SHADER);
     src = glsl_version + "\n" + fs_src;
     src_cstr = src.c_str();
-    gl->ShaderSource(fs, 1, &src_cstr, NULL);
-    gl->CompileShader(fs);
-    gl->GetShaderiv(fs, GL_COMPILE_STATUS, &isCompiled);
+    glShaderSource(fs, 1, &src_cstr, NULL);
+    glCompileShader(fs);
+    glGetShaderiv(fs, GL_COMPILE_STATUS, &isCompiled);
     if(isCompiled == GL_FALSE)
     {
         GLint maxLength = 0;
-        gl->GetShaderiv(fs, GL_INFO_LOG_LENGTH, &maxLength);
+        glGetShaderiv(fs, GL_INFO_LOG_LENGTH, &maxLength);
 
         // The maxLength includes the NULL character
         std::vector<GLchar> errorLog(maxLength);
-        gl->GetShaderInfoLog(fs, maxLength, &maxLength, &errorLog[0]);
+        glGetShaderInfoLog(fs, maxLength, &maxLength, &errorLog[0]);
 
         // Provide the infolog in whatever manor you deem best.
         LOGE("Fragment shader compilation failed: %s\n", errorLog.data());
         TRACE("   Fragment shader compilation failed: %s\n", errorLog.data());
 
         // Exit with failure.
-        gl->DeleteShader(fs); // Don't leak the shader.
+        glDeleteShader(fs); // Don't leak the shader.
         return;
     }
-    gl->AttachShader(crt_shader, fs);
+    glAttachShader(crt_shader, fs);
 
     TRACE("   link shader\n");
-    gl->LinkProgram(crt_shader);
+    glLinkProgram(crt_shader);
 
     // Check that all went well
     GLint status;
-    gl->GetProgramiv(crt_shader, GL_LINK_STATUS, &status);
+    glGetProgramiv(crt_shader, GL_LINK_STATUS, &status);
     if (status == GL_FALSE) {
         GLint log_length;
-        gl->GetProgramiv(crt_shader, GL_INFO_LOG_LENGTH, &log_length);
+        glGetProgramiv(crt_shader, GL_INFO_LOG_LENGTH, &log_length);
         char* log = new char[log_length];
-        gl->GetProgramInfoLog(crt_shader, log_length, NULL, log);
+        glGetProgramInfoLog(crt_shader, log_length, NULL, log);
         LOGE("Link error: %s\n", log);
         TRACE("   Link error: %s\n", log);
         delete[] log;
     }
 
     int i = 0;
-    locations[i++] = gl->GetUniformLocation(crt_shader, "tex");
-    locations[i++] = gl->GetUniformLocation(crt_shader, "width");
-    locations[i++] = gl->GetUniformLocation(crt_shader, "height");
-    locations[i++] = gl->GetUniformLocation(crt_shader, "scanline");
-    locations[i++] = gl->GetUniformLocation(crt_shader, "offset");
-    locations[i++] = gl->GetUniformLocation(crt_shader, "weight");
+    locations[i++] = glGetUniformLocation(crt_shader, "tex");
+    locations[i++] = glGetUniformLocation(crt_shader, "width");
+    locations[i++] = glGetUniformLocation(crt_shader, "height");
+    locations[i++] = glGetUniformLocation(crt_shader, "scanline");
+    locations[i++] = glGetUniformLocation(crt_shader, "offset");
+    locations[i++] = glGetUniformLocation(crt_shader, "weight");
 
-    pos = gl->GetAttribLocation(crt_shader, "position");
+    pos = glGetAttribLocation(crt_shader, "position");
 
     TRACE("   create vertex array object\n");
 #ifdef DISABLE_CRT_CURVATURE
-    gl->GenBuffers(1, &crt_vbo);
-    gl->BindBuffer(GL_ARRAY_BUFFER, crt_vbo);
+    glGenBuffers(1, &crt_vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, crt_vbo);
     float vertices[] = {
         -1.0f,
         -1.0f,
@@ -281,15 +287,15 @@ CrtEffect::CrtEffect(int window_width, int window_height)
         -1.0f,
         1.0f,
     };
-    gl->BufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
 #else
     // Generate a mesh of 20x20 pixel big tiles that will be used to apply the CRT shader
     // the mesh will be deformed to emulate CRT curvature
-    gl->GenBuffers(1, &crt_vbo);
-    gl->BindBuffer(GL_ARRAY_BUFFER, crt_vbo);
+    glGenBuffers(1, &crt_vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, crt_vbo);
 
-    int numTilesX = window_width / 20; // 20x20 pixel tiles
-    int numTilesY = window_height / 20;
+    int numTilesX = width / 20; // 20x20 pixel tiles
+    int numTilesY = height / 20;
     float tileWidth = 2.0f / numTilesX;
     float tileHeight = 2.0f / numTilesY;
 
@@ -320,11 +326,11 @@ CrtEffect::CrtEffect(int window_width, int window_height)
     }
     //assert(vertices.size() == numTilesX * numTilesY * 6 * 2);
     num_triangles = vertices.size() / 6;
-    gl->BufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(float), vertices.data(), GL_STATIC_DRAW);
+    glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(float), vertices.data(), GL_STATIC_DRAW);
 #endif
     // See if we got any GL errors in the queue
     GLenum err;
-    while ((err = gl->GetError()) != GL_NO_ERROR) {
+    while ((err = glGetError()) != GL_NO_ERROR) {
         LOGE("GL error: 0x%x\n", err);
         TRACE("   GL error: 0x%x\n", err);
     }
@@ -335,20 +341,20 @@ CrtEffect::CrtEffect(int window_width, int window_height)
     // Set the offset and weight uniforms
     float offset[5] = {0.0, 1.0, 2.0, 3.0, 4.0};
     float weight[5] = {0.2270270270, 0.1945945946, 0.1216216216, 0.0540540541, 0.0162162162};
-    gl->UseProgram(crt_shader);
-    gl->Uniform1fv(locations[4], 5, offset);
-    gl->Uniform1fv(locations[5], 5, weight);
-    gl->UseProgram(0);
+    glUseProgram(crt_shader);
+    glUniform1fv(locations[4], 5, offset);
+    glUniform1fv(locations[5], 5, weight);
+    glUseProgram(0);
 
     // Generate a texture with a green color
-    gl->GenTextures(1, &green_tex);
-    gl->BindTexture(GL_TEXTURE_2D, green_tex);
+    glGenTextures(1, &green_tex);
+    glBindTexture(GL_TEXTURE_2D, green_tex);
     float green[] = {1.0f, 0.0f, 0.0f, 1.0f};
-    gl->TexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1, 1, 0, GL_RGBA, GL_FLOAT, green);
-    gl->TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    gl->TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    gl->TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    gl->TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1, 1, 0, GL_RGBA, GL_FLOAT, green);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
     TRACE("   exit CrtEffect::CrtEffect\n");
 }
@@ -356,13 +362,18 @@ CrtEffect::CrtEffect(int window_width, int window_height)
 CrtEffect::~CrtEffect()
 {
     TRACE("   CrtEffect::~CrtEffect\n");
-    gl->DeleteProgram(crt_shader);
-    gl->DeleteBuffers(1, &crt_vbo);
-    gl->DeleteTextures(1, &green_tex);
+    glDeleteProgram(crt_shader);
+    glDeleteBuffers(1, &crt_vbo);
+    glDeleteTextures(1, &green_tex);
     TRACE("   exit CrtEffect::~CrtEffect\n");
 }
 
 static std::atomic_int scanline;
+
+void CrtEffect::draw(int fbo_texture)
+{
+    draw(fbo_texture, width, height);
+}
 
 void CrtEffect::draw(int fbo_texture, int fbo_width, int fbo_height)
 {
@@ -370,44 +381,43 @@ void CrtEffect::draw(int fbo_texture, int fbo_width, int fbo_height)
 
     // Render the FBO to the window using the CRT shader
     TRACE("      glActiveTexture\n");
-    gl->ActiveTexture(GL_TEXTURE0);
+    glActiveTexture(GL_TEXTURE0);
     TRACE("      glBindTexture\n");
-    gl->BindTexture(GL_TEXTURE_2D, fbo_texture);
+    glBindTexture(GL_TEXTURE_2D, fbo_texture);
     TRACE("      glUseProgram\n");
-    gl->UseProgram(crt_shader);
+    glUseProgram(crt_shader);
     TRACE("      glUniform1i\n");
-    gl->Uniform1i(locations[0], 0);
+    glUniform1i(locations[0], 0);
     TRACE("      glUniform1f\n");
-    gl->Uniform1f(locations[1], fbo_width);
+    glUniform1f(locations[1], fbo_width);
     TRACE("      glUniform1f\n");
-    gl->Uniform1f(locations[2], fbo_height);
+    glUniform1f(locations[2], fbo_height);
 
     TRACE("      glUniform1f\n");
-    gl->Uniform1f(locations[3], static_cast<float>(scanline % fbo_height));
+    glUniform1f(locations[3], static_cast<float>(scanline % fbo_height));
 
     TRACE("      glEnableVertexAttribArray\n");
-    gl->EnableVertexAttribArray(pos);
+    glEnableVertexAttribArray(pos);
     TRACE("      glBindBuffer\n");
-    gl->BindBuffer(GL_ARRAY_BUFFER, crt_vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, crt_vbo);
     TRACE("      glVertexAttribPointer\n");
-    gl->VertexAttribPointer(pos, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(GLfloat), (void*)0);
+    glVertexAttribPointer(pos, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(GLfloat), (void*)0);
     TRACE("      glBindBuffer\n");
-    gl->BindBuffer(GL_ARRAY_BUFFER, 0);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
 
     TRACE("      glDrawArrays\n");
 #ifdef DISABLE_CRT_CURVATURE
-    gl->DrawArrays(GL_TRIANGLE_FAN, 0, 4);
+    glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
 #else
     //glDrawArrays(/*GL_TRIANGLES*/ GL_LINE_STRIP, 0, num_triangles * 3);
-    gl->DrawArrays(GL_TRIANGLES, 0, num_triangles * 3);
+    glDrawArrays(GL_TRIANGLES, 0, num_triangles * 3);
 #endif
 
     TRACE("   exit CrtEffect::draw\n");
 }
 
-void filter_init(const char *logfile_path, struct gl_functions *gl_interface)
+void filter_init(const char *logfile_path)
 {
-    gl = gl_interface;
     if (logfile_path && !logfile) {
         logfile = fopen(logfile_path, "w");
         if (!logfile) {
@@ -423,7 +433,7 @@ void filter_init(const char *logfile_path, struct gl_functions *gl_interface)
 
     // Get the viewport from OpenGL state
     GLint viewport[4];
-    gl->GetIntegerv(GL_VIEWPORT, viewport);
+    glGetIntegerv(GL_VIEWPORT, viewport);
     crt_effect = new CrtEffect(viewport[2], viewport[3]);
     TRACE("exit filter_init\n");
 }
@@ -444,12 +454,12 @@ void filter_gl_context_restored()
     }
     // Get the viewport from OpenGL state
     GLint viewport[4];
-    gl->GetIntegerv(GL_VIEWPORT, viewport);
+    glGetIntegerv(GL_VIEWPORT, viewport);
     crt_effect = new CrtEffect(viewport[2], viewport[3]);
     TRACE("exit filter_gl_context_restored\n");
 }
 
-void filter_draw(int fbo_texture, int width, int height)
+void filter_draw(int fbo_texture)
 {
     TRACE("filter_draw\n");
     if (!crt_effect) {
@@ -457,7 +467,7 @@ void filter_draw(int fbo_texture, int width, int height)
         return;
     }
 
-    crt_effect->draw(fbo_texture, width, height);
+    crt_effect->draw(fbo_texture);
     TRACE("exit filter_draw\n");
 }
 
