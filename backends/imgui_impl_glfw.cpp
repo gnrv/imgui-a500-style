@@ -115,6 +115,7 @@
 
 extern int upscale_x;
 extern int upscale_y;
+extern int offset_x;
 
 // GLFW data
 enum GlfwClientApi
@@ -416,6 +417,7 @@ void ImGui_ImplGlfw_CursorPosCallback(GLFWwindow* window, double x, double y)
         bd->PrevUserCallbackCursorPos(window, x, y);
 
     ImGuiIO& io = ImGui::GetIO();
+    x -= offset_x;
     x /= upscale_x; y /= upscale_y; y = (int)y; y *= (upscale_y / upscale_x);
     io.AddMousePosEvent((float)x, (float)y);
     bd->LastValidMousePos = ImVec2((float)x, (float)y);
@@ -703,6 +705,7 @@ static void ImGui_ImplGlfw_UpdateMouseData()
             {
                 double mouse_x, mouse_y;
                 glfwGetCursorPos(window, &mouse_x, &mouse_y);
+                mouse_x -= offset_x;
                 mouse_x /= upscale_x; mouse_y /= upscale_y; mouse_y = (int)mouse_y; mouse_y *= (upscale_y / upscale_x);
                 bd->LastValidMousePos = ImVec2((float)mouse_x, (float)mouse_y);
                 io.AddMousePosEvent((float)mouse_x, (float)mouse_y);

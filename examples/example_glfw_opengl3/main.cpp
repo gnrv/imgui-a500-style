@@ -37,6 +37,7 @@
 
 int upscale_x = 3;
 int upscale_y = 6;
+int offset_x = 0;
 
 static void glfw_error_callback(int error, const char* description)
 {
@@ -125,6 +126,7 @@ int main(int, char**)
     (void)io;
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard; // Enable Keyboard Controls
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad; // Enable Gamepad Controls
+    io.MouseDrawCursor = true;
 
     // Setup Dear ImGui style
     ImGui::StyleColorsDark();
@@ -266,6 +268,7 @@ int main(int, char**)
             float s = std::min((float)display_w / window_size[0], (float)display_h / window_size[1]);
             int x = (display_w - s*window_size[0]) / 2;
             int y = (display_h - s*window_size[1]) / 2;
+            offset_x = x;
             glViewport(x, y, s*window_size[0], s*window_size[1]);
             glClearColor(0, 0, 0, 1);
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
@@ -274,6 +277,7 @@ int main(int, char**)
         } else {
             ImGui::Render();
             int display_w, display_h;
+            offset_x = 0;
             glfwGetFramebufferSize(window, &display_w, &display_h);
             glViewport(0, 0, display_w, display_h);
             glClearColor(clear_color.x * clear_color.w, clear_color.y * clear_color.w, clear_color.z * clear_color.w, clear_color.w);
