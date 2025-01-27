@@ -898,6 +898,10 @@ namespace ImGui
     IMGUI_API void          BeginDisabled(bool disabled = true);
     IMGUI_API void          EndDisabled();
 
+    // Transitions, may be a better name than animate
+    IMGUI_API void          BeginAnimated(bool animated = true);
+    IMGUI_API void          EndAnimated();
+
     // Clipping
     // - Mouse hovering is affected by ImGui::PushClipRect() calls, unlike direct calls to ImDrawList::PushClipRect() which are render only.
     IMGUI_API void          PushClipRect(const ImVec2& clip_rect_min, const ImVec2& clip_rect_max, bool intersect_with_current_clip_rect);

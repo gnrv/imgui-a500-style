@@ -8099,6 +8099,24 @@ void ImGui::EndDisabled()
         g.Style.Alpha = g.DisabledAlphaBackup; //PopStyleVar();
 }
 
+void ImGui::BeginAnimated(bool animated)
+{
+    ImGuiContext& g = *GImGui;
+    bool was_animated = (g.CurrentItemFlags & ImGuiItemFlags_Animated) != 0;
+    if (was_animated || animated)
+        g.CurrentItemFlags |= ImGuiItemFlags_Animated;
+    g.ItemFlagsStack.push_back(g.CurrentItemFlags);
+}
+
+void ImGui::EndAnimated()
+{
+    ImGuiContext& g = *GImGui;
+    bool was_animated = (g.CurrentItemFlags & ImGuiItemFlags_Animated) != 0;
+    //PopItemFlag();
+    g.ItemFlagsStack.pop_back();
+    g.CurrentItemFlags = g.ItemFlagsStack.back();
+}
+
 // Could have been called BeginDisabledDisable() but it didn't want to be award nominated for most awkward function name.
 // Ideally we would use a shared e.g. BeginDisabled()->BeginDisabledEx() but earlier needs to be optimal.
 // The whole code for this is awkward, will reevaluate if we find a way to implement SetNextItemDisabled().
